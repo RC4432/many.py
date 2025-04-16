@@ -63,20 +63,20 @@ def lade_deals():
     logging.info(f"🔍 Suche nach: {KEYWORD} (SearchIndex: {SEARCH_INDEX})")
     logging.info(f"📦 DEBUG PARAMS: keyword={KEYWORD}, index={SEARCH_INDEX}, tag={AMAZON_ASSOCIATE_TAG}")
 
-    try:
-request = SearchItemsRequest(
-    partner_tag=AMAZON_ASSOCIATE_TAG,
-    partner_type="Associates",
-    brand="Nike",  # 🔥 Nur die Marke!
-    search_index="Fashion",  # Gültiger Index – wichtig!
-    item_count=5,
-    resources=[
-        "ItemInfo.Title",
-        "Offers.Listings.Price",
-        "Offers.Listings.SavingBasis",
-        "Images.Primary.Large"
-    ]
-)
+try:
+    request = SearchItemsRequest(
+        partner_tag=AMAZON_ASSOCIATE_TAG,
+        partner_type="Associates",
+        brand="Nike",  # 🔥 Nur die Marke!
+        search_index="Fashion",  # Gültiger Index – wichtig!
+        item_count=5,
+        resources=[
+            "ItemInfo.Title",
+            "Offers.Listings.Price",
+            "Offers.Listings.SavingBasis",
+            "Images.Primary.Large"
+        ]
+    )
 
         result = amazon.search_items(request=request)
         time.sleep(1)
