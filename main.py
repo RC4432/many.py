@@ -2,52 +2,70 @@ import logging
 import time
 import os
 from threading import Thread
-from telegram import Bot
 from flask import Flask
+from telegram import Bot
 from amazon_paapi import AmazonApi
 from amazon_paapi.sdk.models.search_items_request import SearchItemsRequest
 
-# --- Flask Setup für Hosting/Render ---
+# --- Webserver für Render / Replit am Leben halten ---
 web = Flask(__name__)
 
 @web.route('/')
 def home():
-    return '✅ Bot läuft'
+    return '✅ Amazon-Dealbot läuft!'
 
 def run_web():
     web.run(host='0.0.0.0', port=8080)
 
 # --- Umgebungsvariablen auslesen ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHANNEL_NAME = os.getenv("TELEGRAM_CHANNEL")
-AMAZON_ACCESS_KEY = os.getenv("AMAZON_ACCESS_KEY")
-AMAZON_SECRET_KEY = os.getenv("AMAZON_SECRET_KEY")
-AMAZON_ASSOCIATE_TAG = os.getenv("AMAZON_ASSOCIATE_TAG")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHANNEL_NAME = os.environ.get("TELEGRAM_CHANNEL")
+AMAZON_ACCESS_KEY = os.environ.get("AMAZON_ACCESS_KEY")
+AMAZON_SECRET_KEY = os.environ.get("AMAZON_SECRET_KEY")
+AMAZON_ASSOCIATE_TAG = os.environ.get("AMAZON_ASSOCIATE_TAG")
+KEYWORD = os.environ.get("KEYWORD")
+SEARCH_INDEX = os.environ.get("SEARCH_INDEX")
 
-# --- Feste Suche für Stabilität ---
-KEYWORD = os.getenv("KEYWORD", "Nike")
-SEARCH_INDEX = os.getenv("SEARCH_INDEX", "Fashion")
-RESOURCES = ["ItemInfo.Title", "Offers.Listings.Price", "Offers.Listings.SavingBasis"]
+# --- Debug-Ausgabe ---
+print("🧪 DEBUG: KEYWORD =", KEYWORD)
+print("🧪 DEBUG: SEARCH_INDEX =", SEARCH_INDEX)
+print("🧪 DEBUG: TELEGRAM_BOT_TOKEN =", TELEGRAM_BOT_TOKEN)
+print("🧪 DEBUG: TELEGRAM_CHANNEL =", CHANNEL_NAME)
+print("🧪 DEBUG: AMAZON_ASSOCIATE_TAG =", AMAZON_ASSOCIATE_TAG)
 
-VALID_SEARCH_INDICES = [
-    "All", "Apparel", "Fashion", "Electronics", "Shoes", "Beauty",
-    "HealthPersonalCare", "SportsAndOutdoors", "Computers", "Books"
-]
+# --- Validierung ---
+if not all([TELEGRAM_BOT_TOKEN, CHANNEL_NAME, AMAZON_ACCESS_KEY, AMAZON_SECRET_KEY, AMAZON_ASSOCIATE_TAG, KEYWORD, SEARCH_INDEX]):
+    raise ValueError("❌ Eine oder mehrere Umgebungsvariablen fehlen! Bitte KEYWORD, SEARCH_INDEX und Amazon/Telegram-Keys setzen.")
 
-if not all([TELEGRAM_BOT_TOKEN, CHANNEL_NAME, AMAZON_ACCESS_KEY, AMAZON_SECRET_KEY, AMAZON_ASSOCIATE_TAG]):
-    raise ValueError("❌ Fehlende Umgebungsvariablen für API-Zugriff oder Telegram.")
+VALID_SEARCH_INDICES = {
+    "All","AmazonVideo","Apparel","Appliances","Automotive","Baby","Beauty","Books",
+    "Classical","Computers","DigitalMusic","Electronics","EverythingElse","Fashion",
+    "ForeignBooks","GardenAndOutdoor","GiftCards","GroceryAndGourmetFood","Handmade",
+    "HealthPersonalCare","HomeAndKitchen","Industrial","Jewelry","KindleStore","Lighting",
+    "Luggage","LuxuryBeauty","Magazines","MobileApps","MoviesAndTV","Music",
+    "MusicalInstruments","OfficeProducts","PetSupplies","Photo","Shoes","Software",
+    "SportsAndOutdoors","ToolsAndHomeImprovement","ToysAndGames","VHS","VideoGames","Watches"
+}
+
 if SEARCH_INDEX not in VALID_SEARCH_INDICES:
     raise ValueError(f"❌ Ungültiger SearchIndex: {SEARCH_INDEX}")
 
-# --- Konfiguration ---
+# --- Einstellungen ---
 POST_INTERVAL_SECONDS = 300  # 5 Minuten
 MIN_RABATT_PROZENT = 10
 backoff_interval = 600
 
-# --- Logging ---
+# --- Logging konfigurieren ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- Bots initialisieren ---
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
-amazon = AmazonApi(AMAZON_ACCESS_KEY, AMAZON_SECRET_KEY, AMAZON_ASSOCIATE_TAG, country="DE")
+amazon = AmazonApi(
+    AMAZON_ACCESS_KEY,
+    AMAZON_SECRET_KEY,
+    AMAZON_ASSOCIATE_TAG,
+    country="DE"
+)
 
 def berechne_rabatt(preis, altpreis):
     try:
@@ -57,7 +75,8 @@ def berechne_rabatt(preis, altpreis):
 
 def lade_deals():
     global backoff_interval
-    deals = []
+    gefiltert = []
+    resources = ["ItemInfo.Title", "Offers.Listings.Price", "Offers.Listings.SavingBasis"]
 
     logging.info(f"🔍 Suche nach: {KEYWORD} (SearchIndex: {SEARCH_INDEX})")
     try:
@@ -67,12 +86,16 @@ def lade_deals():
             keywords=KEYWORD,
             search_index=SEARCH_INDEX,
             item_count=5,
-            resources=RESOURCES
+            resources=resources
         )
 
         result = amazon.search_items(request=request)
-        time.sleep(1)
+        time.sleep(1.5)
         backoff_interval = 600
+
+        if not result.items:
+            logging.warning("Keine Ergebnisse von Amazon erhalten.")
+            return []
 
         for item in result.items:
             try:
@@ -88,7 +111,7 @@ def lade_deals():
                 if discount < MIN_RABATT_PROZENT:
                     continue
 
-                deals.append({
+                deal = {
                     "title": title,
                     "price": price,
                     "old_price": old_price,
@@ -98,10 +121,11 @@ def lade_deals():
                     "reviews": "–",
                     "rating": "–",
                     "link": item.detail_page_url
-                })
+                }
+                gefiltert.append(deal)
 
             except Exception as e:
-                logging.warning(f"⚠️ Fehler bei Artikel: {e}")
+                logging.warning(f"Fehler bei Artikel: {e}")
 
     except Exception as e:
         logging.error(f"❌ Amazon API Fehler: {e}")
@@ -109,7 +133,7 @@ def lade_deals():
         time.sleep(backoff_interval)
         backoff_interval = min(backoff_interval * 2, 3600)
 
-    return deals
+    return gefiltert
 
 def format_deal(deal):
     return f"""🤴  {deal['title']}
@@ -127,19 +151,17 @@ def post_deals():
     try:
         deals = lade_deals()
         if not deals:
-            logging.info("📭 Keine passenden Deals gefunden.")
+            logging.info("Keine passenden Deals gefunden.")
             return
 
-        logging.info(f"📦 {len(deals)} Deals gefunden.")
+        logging.info(f"{len(deals)} Deals gefunden.")
         for deal in deals:
             msg = format_deal(deal)
             bot.send_message(chat_id=CHANNEL_NAME, text=msg)
-            logging.info("✅ Deal gepostet.")
-            time.sleep(1)
+            logging.info("Deal gepostet.")
     except Exception as e:
         logging.error(f"Fehler beim Posten: {e}")
 
-# --- Start ---
 if __name__ == "__main__":
     logging.info("🚀 Bot gestartet.")
     bot.send_message(chat_id=CHANNEL_NAME, text="👋 Amazon-Dealbot ist jetzt aktiv!")
@@ -148,4 +170,3 @@ if __name__ == "__main__":
     while True:
         post_deals()
         time.sleep(POST_INTERVAL_SECONDS)
-	
