@@ -36,15 +36,17 @@ def berechne_rabatt(preis, altpreis):
     except ZeroDivisionError:
         return 0
 
-def lade_deals():
+   
+ def lade_deals():
     global backoff_interval
-    deals = []
+    gefiltert = []
 
+    # Fester Keyword-Test für stabilen Start
     keyword = "Samsung"
     search_index = "Electronics"
-    resources = ["ItemInfo.Title", "Offers.Listings.Price", "Offers.Listings.SavingBasis"]
+    resources = ["ItemInfo.Title", "Offers.Listings.Price"]
 
-    logging.info(f"🔍 Suche nach: {keyword} (Index: {search_index})")
+    logging.info(f"🔍 Suche nach: {keyword} (SearchIndex: {search_index})")
     try:
         request = SearchItemsRequest(
             partner_tag=AMAZON_ASSOCIATE_TAG,
@@ -60,45 +62,31 @@ def lade_deals():
         backoff_interval = 600
 
         if not result.items:
-            logging.warning("⚠️ Keine Ergebnisse.")
+            logging.warning("⚠️ Keine Ergebnisse von Amazon.")
             return []
 
         for item in result.items:
             try:
-                if not item.offers or not item.offers.listings:
-                    continue
-
                 title = item.item_info.title.display_value
                 price = float(item.offers.listings[0].price.amount)
-                savings = float(item.offers.listings[0].price.savings.amount) if item.offers.listings[0].price.savings else 0
-                old_price = price + savings
-                rabatt = berechne_rabatt(price, old_price)
-
-                if rabatt < MIN_RABATT_PROZENT:
-                    continue
-
-                deals.append({
-                    "title": title,
-                    "price": price,
-                    "old_price": old_price,
-                    "discount": f"{rabatt} %",
-                    "shop": "Amazon",
-                    "shipping_info": "Versand durch Amazon",
-                    "reviews": "–",
-                    "rating": "–",
-                    "link": item.detail_page_url
-                })
-
+                # Weiterverarbeitung...
             except Exception as e:
-                logging.warning(f"🟠 Fehler bei Artikel: {e}")
+                logging.error(f"Fehler beim Verarbeiten des Items: {e}")
+        return gefiltert
 
     except Exception as e:
-        logging.error(f"❌ Amazon API Fehler: {e}")
-        logging.info(f"🕒 Warte {backoff_interval} Sekunden...")
-        time.sleep(backoff_interval)
-        backoff_interval = min(backoff_interval * 2, 3600)
+        logging.error(f"Fehler bei der API-Anfrage: {e}")
+        return []
 
-    return deals
+
+                
+                  
+
+               
+                  
+                           
+       
+        
 
 def format_deal(deal):
     return f"""🤴 {deal['title']}
@@ -144,3 +132,5 @@ if __name__ == "__main__":
     while True:
         post_deals()
         time.sleep(POST_INTERVAL_SECONDS)
+
+	
