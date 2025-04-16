@@ -1,0 +1,3 @@
+python-telegram-bot==13.15
+flask
+python-amazon-paapi==5.0.1
