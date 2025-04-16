@@ -1,62 +1,71 @@
-import logging
-import time
 import os
-import random
-from threading import Thread
+import time
+import logging
 from flask import Flask
+from threading import Thread
 from telegram import Bot
 from amazon_paapi import AmazonApi
+from amazon_paapi.sdk.models.search_items_request import SearchItemsRequest
 
-# --- Umgebungsvariablen ---
+# --- Konfiguration ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHANNEL_NAME = os.getenv("TELEGRAM_CHANNEL")
 AMAZON_ACCESS_KEY = os.getenv("AMAZON_ACCESS_KEY")
 AMAZON_SECRET_KEY = os.getenv("AMAZON_SECRET_KEY")
-AMAZON_ASSOCIATE_TAG = os.getenv("AMAZON_ASSOCIATE_TAG")
-KEYWORD = os.getenv("KEYWORD", "Nike")
-SEARCH_INDEX = os.getenv("SEARCH_INDEX", "Fashion")
-DEBUG = os.getenv("DEBUG", "False") == "True"
+AMAZON_ASSOCIATE_TAG = os.getenv("AMAZON_ASSOCIATE_TAG") or "DEIN_TAG"  # 🔁 falls None, benutze Testwert
 
-# --- Validierung ---
-if not all([TELEGRAM_BOT_TOKEN, CHANNEL_NAME, AMAZON_ACCESS_KEY, AMAZON_SECRET_KEY, AMAZON_ASSOCIATE_TAG]):
-    raise ValueError("❌ Fehlende Umgebungsvariablen. Bitte alle Secrets setzen.")
+KEYWORD = os.getenv("KEYWORD") or "Nike"
+SEARCH_INDEX = os.getenv("SEARCH_INDEX") or "Fashion"
+
+POST_INTERVAL_SECONDS = 900  # 15 Min
+MIN_RABATT_PROZENT = 10
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Telegram Bot & Amazon API ---
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
-amazon = AmazonApi(AMAZON_ACCESS_KEY, AMAZON_SECRET_KEY, AMAZON_ASSOCIATE_TAG, country="DE")
-
-# --- Flask für Render ---
+# --- Flask App für Render/UptimeRobot ---
 web = Flask(__name__)
 
 @web.route("/")
 def home():
-    return '✅ Bot läuft'
+    return "✅ Bot läuft"
 
 def run_web():
-    web.run(host='0.0.0.0', port=8080)
+    web.run(host="0.0.0.0", port=8080)
 
-# --- Konstante ---
-POST_INTERVAL_SECONDS = 300  # 5 Minuten
-MIN_RABATT_PROZENT = 10
+# --- Telegram Bot ---
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-# --- Rabattberechnung ---
+# --- Amazon API ---
+amazon = AmazonApi(
+    AMAZON_ACCESS_KEY,
+    AMAZON_SECRET_KEY,
+    AMAZON_ASSOCIATE_TAG,
+    country="DE"
+)
+
 def berechne_rabatt(preis, altpreis):
     try:
         return round((1 - (preis / altpreis)) * 100)
-    except ZeroDivisionError:
+    except:
         return 0
 
-# --- Deals abrufen ---
 def lade_deals():
-    gefiltert = []
     logging.info(f"🔍 Suche nach: {KEYWORD} (SearchIndex: {SEARCH_INDEX})")
     logging.info(f"📦 DEBUG PARAMS: keyword={KEYWORD}, index={SEARCH_INDEX}, tag={AMAZON_ASSOCIATE_TAG}")
 
+    gefiltert = []
     try:
-        result = amazon.search_items_by_keywords(keywords=KEYWORD, search_index=SEARCH_INDEX, item_count=3)
+        request = SearchItemsRequest(
+            partner_tag=AMAZON_ASSOCIATE_TAG,
+            partner_type="Associates",
+            keywords=KEYWORD,
+            search_index=SEARCH_INDEX,
+            item_count=3,
+            resources=["ItemInfo.Title", "Offers.Listings.Price", "Offers.Listings.SavingBasis"]
+        )
+
+        result = amazon.search_items(request=request)
         time.sleep(2)
 
         for item in result.items:
@@ -68,28 +77,21 @@ def lade_deals():
                 price = float(item.offers.listings[0].price.amount)
                 savings = float(item.offers.listings[0].price.savings.amount) if item.offers.listings[0].price.savings else 0.0
                 old_price = price + savings
-                discount = berechne_rabatt(price, old_price)
+                rabatt = berechne_rabatt(price, old_price)
 
-                if discount < MIN_RABATT_PROZENT:
+                if rabatt < MIN_RABATT_PROZENT:
                     continue
 
                 deal = {
                     "title": title,
                     "price": price,
                     "old_price": old_price,
-                    "discount": f"{discount} %",
-                    "shop": "Amazon",
-                    "shipping_info": "Versand durch Amazon",
-                    "reviews": "–",
-                    "rating": "–",
+                    "discount": f"{rabatt} %",
                     "link": item.detail_page_url
                 }
-
                 gefiltert.append(deal)
-
             except Exception as e:
-                logging.warning(f"⚠️ Fehler bei Artikel: {e}")
-
+                logging.warning(f"❗ Fehler bei Artikel: {e}")
     except Exception as e:
         logging.error(f"❌ Amazon API Fehler: {e}")
         logging.info("🕒 Warte 600 Sekunden...")
@@ -97,42 +99,37 @@ def lade_deals():
 
     return gefiltert
 
-# --- Formatierter Deal ---
 def format_deal(deal):
-    return f"""🤴  {deal['title']}
+    return f"""🛒 {deal['title']}
 
-{deal['price']}€  statt {deal['old_price']}€  - {deal['discount']} 🔥
+{deal['price']}€ statt {deal['old_price']}€ – {deal['discount']} 🔥
 
-🚚 Verkauft durch {deal['shop']} und {deal['shipping_info']}
-{deal['reviews']}: {deal['rating']}
+👉 [Jetzt zu Amazon]({deal['link']})
 
-🛒 zu Amazon  {deal['link']}
+_Affiliate-Link. Du unterstützt mich kostenlos ❤️_
+"""
 
-_Anzeige | Affiliate-Link – Du unterstützt mich ohne Mehrkosten._"""
-
-# --- Deals posten ---
 def post_deals():
-    try:
-        deals = lade_deals()
-        if not deals:
-            logging.info("Keine passenden Deals gefunden.")
-            return
+    deals = lade_deals()
+    if not deals:
+        logging.info("ℹ️ Keine Deals gefunden.")
+        return
 
-        logging.info(f"{len(deals)} Deals gefunden.")
-        for deal in deals:
-            msg = format_deal(deal)
-            bot.send_message(chat_id=CHANNEL_NAME, text=msg)
+    for deal in deals:
+        try:
+            bot.send_message(chat_id=CHANNEL_NAME, text=format_deal(deal), parse_mode="Markdown")
             logging.info("✅ Deal gepostet.")
+        except Exception as e:
+            logging.error(f"⚠️ Fehler beim Senden: {e}")
 
-    except Exception as e:
-        logging.error(f"Fehler beim Posten: {e}")
-
-# --- Hauptprogramm ---
+# --- Start ---
 if __name__ == "__main__":
     logging.info("🚀 Bot gestartet.")
     bot.send_message(chat_id=CHANNEL_NAME, text="👋 Amazon-Dealbot ist jetzt aktiv!")
+
     Thread(target=run_web).start()
 
     while True:
         post_deals()
         time.sleep(POST_INTERVAL_SECONDS)
+
