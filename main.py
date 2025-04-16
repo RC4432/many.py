@@ -36,8 +36,8 @@ def berechne_rabatt(preis, altpreis):
     except ZeroDivisionError:
         return 0
 
-   
- def lade_deals():
+
+def lade_deals():
     global backoff_interval
     gefiltert = []
 
@@ -77,7 +77,6 @@ def berechne_rabatt(preis, altpreis):
     except Exception as e:
         logging.error(f"Fehler bei der API-Anfrage: {e}")
         return []
-
 
                 
                   
